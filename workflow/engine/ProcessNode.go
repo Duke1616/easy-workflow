@@ -3,9 +3,10 @@ package engine
 import (
 	"errors"
 	"fmt"
-	. "github.com/Bunny3th/easy-workflow/workflow/model"
 	"regexp"
 	"strings"
+
+	. "github.com/Bunny3th/easy-workflow/workflow/model"
 )
 
 // 处理节点,如：生成task、进行条件判断、处理结束节点等
@@ -227,7 +228,28 @@ func GateWayNodeHandle(ProcessInstanceID int, CurrentNode *Node, PrevTaskNode No
 			return err
 		}
 		for k, v := range kv {
+			// 如果变量值包含单引号，需要进行转义，否则会破坏 SQL 语句结构
+			// 例如：v = "I'm OK", 替换后变成 'I'm OK' -> SQL 报错
+			// 转义后：v = "I\'m OK", 替换后变成 'I\'m OK' -> SQL 正常
+			v = strings.Replace(v, "'", "\\'", -1)
 			expression = strings.Replace(expression, k, fmt.Sprintf("'%s'", v), -1)
+		}
+
+		// 适配 JSON 数组的 IN 查询 (User Request)
+		// 场景：前端传入的表达式为 $tags in ('frontend')
+		// 替换变量后变为：'["backend","frontend"]' in ('frontend')
+		// SQL 无法直接处理这种 JSON 数组字符串的 IN 查询，需要转换为 JSON_CONTAINS
+		// 转换目标：JSON_CONTAINS('["backend","frontend"]', '"frontend"')
+		// 正则解释：匹配 单引号包围的JSON数组 + IN + 单引号包围的单个值
+		// Group 1: JSON 数组内容 (不含外部单引号)
+		// Group 2: 待查找的值 (不含外部单引号)
+		jsonArrayInPattern := regexp.MustCompile(`'(\[.*?\])'\s+(?i)in\s+\(\s*'([^']+)'\s*\)`)
+		if jsonArrayInPattern.MatchString(expression) {
+			// 重写为 JSON_CONTAINS
+			// 注意：JSON_CONTAINS 的第二个参数也必须是 JSON 格式，所以如果是字符串查找，需要用双引号包裹值
+			// $1 是数组内容，'$1' 还原了 SQL 字符串格式
+			// $2 是查找值，'"$2"' 将其格式化为 JSON 字符串 '"val"'
+			expression = jsonArrayInPattern.ReplaceAllString(expression, `JSON_CONTAINS('$1', '"$2"')`)
 		}
 
 		//计算表达式，如果成功，则将节点添加到下一级节点组中
